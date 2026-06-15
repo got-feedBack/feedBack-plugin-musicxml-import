@@ -1,0 +1,63 @@
+<div class="max-w-4xl mx-auto px-6 pt-24 pb-16">
+    <button onclick="showScreen('home')" class="text-gray-500 hover:text-white text-sm mb-6 flex items-center gap-1">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+        </svg> Back
+    </button>
+
+    <h2 class="text-3xl font-bold text-white mb-2">Import MusicXML</h2>
+    <p class="text-gray-500 mb-2">Convert a MusicXML score into a playable sloppak with notation data and synthesized piano audio.</p>
+    <p class="text-xs text-gray-600 mb-8">
+        Requires Slopsmith with the notation format (feat/notation-format or later).
+        Only the first part is imported. Supports dynamics, articulations, ties, grace notes,
+        key/time signatures, and tempo changes. No repeats or da capo expansion.
+    </p>
+
+    <!-- Drop zone -->
+    <div id="mxi-dropzone" class="border-2 border-dashed border-gray-700 rounded-2xl p-12 text-center mb-8 transition hover:border-accent/40 cursor-pointer">
+        <svg class="w-12 h-12 mx-auto mb-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/>
+        </svg>
+        <p class="text-gray-400 text-sm mb-2">Drag and drop a MusicXML file here</p>
+        <p class="text-gray-600 text-xs">or click to browse &nbsp;·&nbsp; .xml .musicxml</p>
+        <input type="file" id="mxi-file-input" accept=".xml,.musicxml" class="hidden">
+    </div>
+
+    <!-- Parsed metadata editor -->
+    <div id="mxi-parsed" class="hidden">
+        <div class="bg-dark-700 border border-gray-800 rounded-xl p-5 mb-6">
+            <div class="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                    <label class="text-xs text-gray-400 mb-1 block">Title</label>
+                    <input type="text" id="mxi-title"
+                        class="w-full bg-dark-600 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 outline-none focus:border-accent/50">
+                </div>
+                <div>
+                    <label class="text-xs text-gray-400 mb-1 block">Composer</label>
+                    <input type="text" id="mxi-composer"
+                        class="w-full bg-dark-600 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 outline-none focus:border-accent/50">
+                </div>
+            </div>
+            <div id="mxi-info" class="text-xs text-gray-500"></div>
+        </div>
+        <div class="flex gap-3">
+            <button onclick="mxiBuild()"
+                class="bg-accent hover:bg-accent-light px-6 py-2.5 rounded-xl text-sm font-semibold text-white transition">
+                Build Sloppak
+            </button>
+            <button onclick="mxiReset()"
+                class="px-4 py-2.5 rounded-xl text-sm text-gray-500 hover:text-white transition">
+                Cancel
+            </button>
+        </div>
+    </div>
+
+    <!-- Progress -->
+    <div id="mxi-progress" class="hidden">
+        <div class="progress-bar mb-3"><div class="fill" id="mxi-bar" style="width:0%"></div></div>
+        <p class="text-xs text-gray-500" id="mxi-stage">Starting…</p>
+    </div>
+
+    <!-- Result -->
+    <div id="mxi-result" class="hidden"></div>
+</div>

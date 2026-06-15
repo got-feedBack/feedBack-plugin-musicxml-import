@@ -1,0 +1,12 @@
+{
+  "id": "musicxml_import",
+  "name": "Import MusicXML",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Imports MusicXML scores into notation-format sloppaks with FluidSynth-rendered audio.",
+  "nav": { "label": "Import MusicXML", "screen": "plugin-musicxml_import" },
+  "screen": "screen.html",
+  "script": "screen.js",
+  "routes": "routes.py",
+  "requirements": ["midiutil", "pyyaml"]
+}
