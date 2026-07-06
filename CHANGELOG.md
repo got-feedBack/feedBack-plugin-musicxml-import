@@ -1,6 +1,7 @@
 # Changelog
 
-All notable changes to `slopsmith-plugin-musicxml-import` are documented here.
+All notable changes to `feedBack-plugin-musicxml-import` (formerly
+`slopsmith-plugin-musicxml-import`) are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
@@ -9,6 +10,54 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Changed
+
+- **Output is now `.feedpak`** (was `.sloppak`) per the published
+  [feedpak spec](https://github.com/got-feedback/feedpak-spec); packs land
+  in `dlc/musicxml/` (was `dlc/sloppack/`). The manifest stamps
+  `feedpak_version` from core's `FEEDPAK_VERSION` constant (spec §4.1),
+  omits empty `album`/`year` placeholders, and omits the arrangement
+  `type` hint when instrument inference fails (was `type: unknown`).
+- **Rebranded Slopsmith → FeedBack / feedpak** across UI copy, manifest
+  description, logger name, README, and CONTEXT; dropped the obsolete
+  "requires feat/notation-format branch" notes (the notation format is in
+  core main). Plugin version bumped to 0.2.0.
+- **`requirements` manifest key replaced by `requirements.txt`** — the
+  plugin loader only installs from the file; the manifest key was dead
+  (deps also ship with core, so nothing broke in practice).
+
+### Fixed
+
+- `pyyaml` pinned to `>=6.0,<7` in `requirements.txt` (was unbounded) —
+  an unpinned future major bump could silently break `manifest.yaml`
+  serialization on a loader-triggered reinstall.
+- README/CONTEXT dependency docs now flag FluidSynth + GeneralUser-GS.sf2
+  as audio-only, not a hard requirement — the "Include synthesized piano
+  audio" checkbox and the graceful audio-failure handling both mean a
+  build can succeed without it.
+
+### Added
+
+- **Tuplet support** — MusicXML `<time-modification>` now emits the
+  notation beat field `tu: [actual, normal]` (feedpak spec §7.6) on note
+  and rest beats, closing the "MusicXML importer omits `tu`" upstream
+  follow-up noted in core `lib/notation.py`.
+- **Song-level tempo and time-signature maps** — `song_timeline.json` now
+  carries `tempos: [{time, bpm}]` and `time_signatures: [{time, ts}]`
+  (feedpak spec §7.4, format 1.2.0), converted measure-by-measure so
+  mid-score `divisions` changes keep event times exact.
+- **"Include synthesized piano audio" checkbox** (default on). Unchecked
+  → audio rendering is skipped entirely and the pack is written without
+  stems (a local authoring intermediate per spec §5.3.2 — add stems in
+  the editor before sharing; the success card says so). Rendering
+  failures are never fatal: the pack is still created and the failure is
+  reported on the completion card.
+- **Compiled plugin stylesheet** (`assets/plugin.css` via the manifest
+  `styles` key, built by `build-tailwind.sh` with `preflight: false`) —
+  the screen's Tailwind opacity-modifier classes (`bg-accent/5`,
+  `bg-green-900/20`, …) are not in core's prebuilt CSS, so hover states
+  and result cards rendered unstyled on runtime-installed copies.
+
+### Changed (pre-relaunch, under the Slopsmith name)
 
 - **Curated into the slopsmith org** (slopsmith#825 WS4a, epic
   slopsmith#828): `private: false` and a one-line `description` added to

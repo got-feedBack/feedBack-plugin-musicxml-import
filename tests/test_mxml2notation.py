@@ -1,4 +1,4 @@
-"""Schema-alignment tests for mxml2notation (sloppak-spec §5.3, slopsmith#838).
+"""Schema-alignment tests for mxml2notation (feedpak spec §7.6).
 
 Covers the frozen notation schema v1 fields added during curation:
 typed grace strings, sustain pedal (spd/sph/spu), credits

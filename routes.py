@@ -7,8 +7,9 @@ Endpoints:
     Saves the raw bytes to a temp file for the build step.
 
   WS   /ws/plugins/musicxml_import/build
-    Builds a .sloppak from the uploaded MusicXML file, streaming progress
-    messages. Produces notation_keys.json + song_timeline.json in the zip.
+    Builds a .feedpak from the uploaded MusicXML file, streaming progress
+    messages. Produces notation_<instrument>.json + song_timeline.json in
+    the zip.
 """
 
 from __future__ import annotations
@@ -121,9 +122,11 @@ def setup(app, context):
         upload_id: str,
         title: str = '',
         composer: str = '',
+        include_audio: str = '1',
     ):
-        """Build a .sloppak from the uploaded MusicXML, stream progress."""
+        """Build a .feedpak from the uploaded MusicXML, stream progress."""
         await websocket.accept()
+        want_audio = include_audio not in ('0', 'false', 'no')
 
         dlc = _get_dlc_dir()
         if not dlc:
@@ -171,9 +174,18 @@ def setup(app, context):
                 tmp_midi = tmp_midi_dir / 'score.mid'
                 tmp_midi.write_bytes(result['midi_bytes'])
 
+                # Either way a pack may end up without stems — a local
+                # authoring intermediate (feedpak spec §5.3.2 carve-out):
+                # deliberately when the user unchecked "include audio",
+                # or gracefully when FluidSynth fails (reported on
+                # completion, never fatal).
                 audio_path = None
                 audio_error = None
-                if _render_midi_to_audio is None:
+                audio_skipped = False
+                if not want_audio:
+                    audio_skipped = True
+                    report('Audio skipped (unchecked).', 65)
+                elif _render_midi_to_audio is None:
                     audio_error = 'gp2midi not available'
                     report(f'Audio skipped: {audio_error}', 65)
                 else:
@@ -186,8 +198,8 @@ def setup(app, context):
                         audio_error = str(e)
                         report(f'Audio skipped: {audio_error}', 65)
 
-                report('Assembling sloppak…', 75)
-                sloppak_bytes = _mxml.build_sloppak_zip(
+                report('Assembling feedpak…', 75)
+                pak_bytes = _mxml.build_feedpak_zip(
                     result, audio_path, use_title, use_composer
                 )
 
@@ -195,19 +207,19 @@ def setup(app, context):
                 safe_t = re.sub(r'_mxml$', '', safe_t, flags=re.IGNORECASE)
                 safe_a = re.sub(r'[<>:"/\\|?*\s]', '_', use_composer)[:40]
                 out_name = (
-                    f'{safe_t}_{safe_a}_mxml.sloppak'
-                    if safe_a else f'{safe_t}_mxml.sloppak'
+                    f'{safe_t}_{safe_a}_mxml.feedpak'
+                    if safe_a else f'{safe_t}_mxml.feedpak'
                 )
 
-                out_dir = Path(dlc) / 'sloppack'
+                out_dir = Path(dlc) / 'musicxml'
                 out_dir.mkdir(parents=True, exist_ok=True)
                 out_path = out_dir / out_name
 
                 report('Writing to DLC folder…', 88)
-                out_path.write_bytes(sloppak_bytes)
+                out_path.write_bytes(pak_bytes)
 
                 try:
-                    rel_name = str(Path('sloppack') / out_name)
+                    rel_name = str(Path('musicxml') / out_name)
                     meta = _extract_meta(out_path)
                     stat = out_path.stat()
                     _meta_db.put(rel_name, stat.st_mtime, stat.st_size, meta)
@@ -224,6 +236,8 @@ def setup(app, context):
                 }
                 if audio_error:
                     msg['audio_warning'] = audio_error
+                if audio_skipped:
+                    msg['audio_skipped'] = True
                 progress_queue.put_nowait(msg)
 
             except Exception as e:
