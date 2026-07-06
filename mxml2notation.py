@@ -360,28 +360,99 @@ def _build_tempo_map(root: ET.Element) -> list[tuple[int, float]]:
     return events
 
 
+def _build_divisions_map(root: ET.Element) -> list[tuple[int, int]]:
+    """Return (abs_div, divisions) at each measure where divisions changes.
+
+    divisions-per-quarter may change at a measure boundary (a mid-*measure*
+    change is a dropped schema-v1 non-feature, but a boundary change is legal).
+    ``abs_div`` accumulates across measures counted in each measure's own
+    divisions, so converting an abs_div that spans a change needs the divisions
+    active within each span — see ``_div_to_seconds``. Mirrors the measure walk
+    in ``_build_tempo_map``; the first entry is always at abs_div 0.
+    """
+    dmap: list[tuple[int, int]] = [(0, 1)]
+    parts = root.findall('part')
+    if not parts:
+        return dmap
+
+    part = parts[0]
+    divisions = 1
+    abs_div = 0
+
+    for measure in part.findall('measure'):
+        # <attributes><divisions> applies from this measure's start.
+        for attr in measure.findall('attributes'):
+            d = attr.findtext('divisions')
+            if d:
+                nd = int(d)
+                if nd != divisions:
+                    divisions = nd
+                    if dmap[-1][0] == abs_div:
+                        dmap[-1] = (abs_div, divisions)
+                    else:
+                        dmap.append((abs_div, divisions))
+
+        measure_dur = 0
+        for elem in measure:
+            if elem.tag in ('note', 'forward', 'backup'):
+                dur = elem.findtext('duration')
+                if dur is None:
+                    continue
+                dur_i = int(dur)
+                if elem.tag == 'forward':
+                    measure_dur += dur_i
+                elif elem.tag == 'backup':
+                    measure_dur -= dur_i
+                elif elem.tag == 'note':
+                    if elem.find('chord') is None and elem.find('grace') is None:
+                        measure_dur += dur_i
+        abs_div += max(0, measure_dur)
+
+    return dmap
+
+
+def _active_in_map(m: list[tuple[int, float]], pos: int, default: float) -> float:
+    """Value active at ``pos`` in an ascending (div, value) step map."""
+    val = default
+    for d, v in m:
+        if d <= pos:
+            val = v
+        else:
+            break
+    return val
+
+
 def _div_to_seconds(
     abs_div: int,
-    divisions: int,
+    divisions_map: list[tuple[int, int]],
     tempo_map: list[tuple[int, float]],
 ) -> float:
-    """Convert absolute divisions to seconds."""
-    bpm = 120.0
-    event_div = 0
+    """Convert an absolute-division position to seconds.
+
+    Both tempo (bpm) and divisions-per-quarter can change at measure
+    boundaries, so the ``[0, abs_div)`` span is walked in sub-spans delimited by
+    the union of tempo and divisions boundaries, each using the bpm and
+    divisions active within it. Divisions is constant inside a measure, so
+    ``span / divisions`` is an exact quarter-note count on every sub-span.
+    """
+    if abs_div <= 0:
+        return 0.0
+
+    bounds = {0, abs_div}
+    for d, _ in tempo_map:
+        if 0 < d < abs_div:
+            bounds.add(d)
+    for d, _ in divisions_map:
+        if 0 < d < abs_div:
+            bounds.add(d)
+    ordered = sorted(bounds)
+
     seconds = 0.0
-
-    for i, (ev_div, ev_bpm) in enumerate(tempo_map):
-        if ev_div > abs_div:
-            break
-        if i > 0:
-            prev_div, prev_bpm = tempo_map[i - 1]
-            span = ev_div - prev_div
-            seconds += (span / divisions) * (60.0 / prev_bpm)
-        event_div = ev_div
-        bpm = ev_bpm
-
-    span = abs_div - event_div
-    seconds += (span / divisions) * (60.0 / bpm)
+    for lo, hi in zip(ordered, ordered[1:]):
+        dv = _active_in_map(divisions_map, lo, 1)
+        bpm = _active_in_map(tempo_map, lo, 120.0)
+        if dv > 0 and bpm > 0:
+            seconds += ((hi - lo) / dv) * (60.0 / bpm)
     return seconds
 
 
@@ -910,6 +981,9 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
 
     # ── Tempo map ───────────────────────────────────────────────────────────
     tempo_map = _build_tempo_map(root)
+    # divisions-per-quarter can change at measure boundaries; _div_to_seconds
+    # needs the value active in each span (issue #5), not a single scalar.
+    divisions_map = _build_divisions_map(root)
 
     # ── Parse first part only ───────────────────────────────────────────────
     parts = root.findall('part')
@@ -946,9 +1020,9 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
     beats_out: list[dict] = []
     sections_out: list[dict] = []
     # song_timeline tempo / time-signature maps (feedpak spec §7.4, 1.2.0).
-    # Tempo events are consumed from tempo_map measure by measure so each
-    # event's div→seconds conversion uses the divisions value active in its
-    # own measure (divisions can change mid-score).
+    # Tempo events are consumed from tempo_map measure by measure; their
+    # div→seconds conversion goes through divisions_map, so a mid-score
+    # divisions change is handled per-span (issue #5).
     tempos_out: list[dict] = []
     ts_changes_out: list[dict] = []
     tempo_map_idx = 0
@@ -1111,7 +1185,7 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
             n_quarter_beats = max(1, round(quarters_per_measure))
             for qi in range(n_quarter_beats):
                 beat_div = measure_abs_div_start + qi * quarter_note_dur
-                beat_time = _div_to_seconds(beat_div, divisions, tempo_map)
+                beat_time = _div_to_seconds(beat_div, divisions_map, tempo_map)
                 beats_out.append({
                     'time': round(beat_time, 4),
                     'measure': measure_number if qi == 0 else -1,
@@ -1121,7 +1195,7 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
             offset = 0
             for i, group in enumerate(_bg):
                 beat_div = measure_abs_div_start + offset * denom_unit_in_divisions
-                beat_time = _div_to_seconds(beat_div, divisions, tempo_map)
+                beat_time = _div_to_seconds(beat_div, divisions_map, tempo_map)
                 beats_out.append({
                     'time': round(beat_time, 4),
                     'measure': measure_number if i == 0 else -1,
@@ -1133,7 +1207,7 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
             for dt in direction.findall('direction-type'):
                 rehearsal = dt.find('rehearsal')
                 if rehearsal is not None and rehearsal.text:
-                    r_time = _div_to_seconds(measure_abs_div_start, divisions, tempo_map)
+                    r_time = _div_to_seconds(measure_abs_div_start, divisions_map, tempo_map)
                     name = rehearsal.text.strip()
                     section_counters[name] = section_counters.get(name, 0) + 1
                     sections_out.append({
@@ -1188,7 +1262,7 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
                     abs_div += int(dur_text)
 
             note_div = voice_cursor.get(voice, abs_div)
-            note_time = round(_div_to_seconds(note_div, divisions, tempo_map), 4)
+            note_time = round(_div_to_seconds(note_div, divisions_map, tempo_map), 4)
 
             # Sustain for MIDI only (non-grace, non-rest)
             midi_dur_divs = int(elem.findtext('duration') or 0) if not is_grace else 0
@@ -1397,7 +1471,7 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
         # ── Flush measure ──────────────────────────────────────────────────
         ts = [ts_beats, ts_beat_type]
         measure_dict: dict = {'idx': measure_number, 't': round(
-            _div_to_seconds(measure_abs_div_start, divisions, tempo_map), 4
+            _div_to_seconds(measure_abs_div_start, divisions_map, tempo_map), 4
         )}
 
         # Anacrusis (pickup / upbeat) measure — MusicXML implicit="yes".
@@ -1458,7 +1532,7 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
                and tempo_map[tempo_map_idx][0] < measure_end_div):
             ev_div, ev_bpm = tempo_map[tempo_map_idx]
             tempos_out.append({
-                'time': round(_div_to_seconds(ev_div, divisions, tempo_map), 4),
+                'time': round(_div_to_seconds(ev_div, divisions_map, tempo_map), 4),
                 'bpm': round(ev_bpm, 3),
             })
             tempo_map_idx += 1
@@ -1469,7 +1543,7 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
     while tempo_map_idx < len(tempo_map):
         ev_div, ev_bpm = tempo_map[tempo_map_idx]
         tempos_out.append({
-            'time': round(_div_to_seconds(ev_div, divisions, tempo_map), 4),
+            'time': round(_div_to_seconds(ev_div, divisions_map, tempo_map), 4),
             'bpm': round(ev_bpm, 3),
         })
         tempo_map_idx += 1
