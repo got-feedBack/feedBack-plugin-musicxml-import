@@ -116,12 +116,16 @@ async function mxiBuild() {
 
     const title    = document.getElementById('mxi-title').value.trim();
     const composer = document.getElementById('mxi-composer').value.trim();
+    const includeAudio = document.getElementById('mxi-include-audio');
 
     document.getElementById('mxi-parsed').classList.add('hidden');
     document.getElementById('mxi-progress').classList.remove('hidden');
     document.getElementById('mxi-result').classList.add('hidden');
 
-    const params = new URLSearchParams({ upload_id: _uploadId, title, composer });
+    const params = new URLSearchParams({
+        upload_id: _uploadId, title, composer,
+        include_audio: (!includeAudio || includeAudio.checked) ? '1' : '0',
+    });
     const ws = new WebSocket(`${WS_BASE}/build?${params}`);
 
     ws.onmessage = (ev) => {
@@ -139,12 +143,20 @@ async function mxiBuild() {
             const mins = Math.floor((msg.duration || 0) / 60);
             const secs = Math.round((msg.duration || 0) % 60);
             const audioLine = msg.audio_warning
-                ? `<p class="text-amber-400/80 text-xs mt-2">⚠ No audio: ${esc(msg.audio_warning)}</p>`
+                ? `<p class="text-amber-400/80 text-xs mt-2">
+                       ⚠ Audio rendering failed (${esc(msg.audio_warning)}) — the pack was created without audio.<br>
+                       Not portable yet — open it in the editor and add stems before sharing.
+                   </p>`
+                : msg.audio_skipped
+                ? `<p class="text-gray-500 text-xs mt-2">
+                       Created without audio, as requested.
+                       Add stems in the editor before sharing.
+                   </p>`
                 : '';
 
             document.getElementById('mxi-result').innerHTML = `
                 <div class="bg-green-900/20 border border-green-800/30 rounded-xl p-5 text-center">
-                    <p class="text-green-400 font-semibold mb-1">Notation Sloppak Created!</p>
+                    <p class="text-green-400 font-semibold mb-1">Feedpak created!</p>
                     <p class="text-sm text-gray-400">${esc(msg.filename)}</p>
                     <p class="text-xs text-gray-500 mt-1">
                         ${msg.measure_count} measures &nbsp;·&nbsp; ${mins}:${String(secs).padStart(2, '0')}
