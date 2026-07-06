@@ -50,8 +50,8 @@ setTimeout(() => {
 
 async function mxiHandleFile(file) {
     const ext = file.name.split('.').pop().toLowerCase();
-    if (!['xml', 'musicxml'].includes(ext)) {
-        alert('Only .xml and .musicxml files are supported.');
+    if (!['xml', 'musicxml', 'mxl'].includes(ext)) {
+        alert('Only .xml, .musicxml, and .mxl files are supported.');
         return;
     }
 
@@ -213,7 +213,7 @@ function mxiReset() {
                 d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/>
         </svg>
         <p class="text-gray-400 text-sm mb-2">Drag and drop a MusicXML file here</p>
-        <p class="text-gray-600 text-xs">or click to browse &nbsp;·&nbsp; .xml .musicxml</p>`;
+        <p class="text-gray-600 text-xs">or click to browse &nbsp;·&nbsp; .xml .musicxml .mxl</p>`;
 }
 
 // Expose build/reset globally so onclick in screen.html works

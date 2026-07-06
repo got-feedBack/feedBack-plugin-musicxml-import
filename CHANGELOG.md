@@ -37,6 +37,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **Compressed MusicXML (`.mxl`) support** — detected by zip magic number
+  (not filename extension), unwrapped via `META-INF/container.xml`'s
+  primary `<rootfile>` before parsing; falls back to the first top-level
+  `.xml` entry for malformed archives missing that manifest. Upload and
+  the drag-and-drop UI both accept `.mxl` alongside `.xml`/`.musicxml`.
 - **Tuplet support** — MusicXML `<time-modification>` now emits the
   notation beat field `tu: [actual, normal]` (feedpak spec §7.6) on note
   and rest beats, closing the "MusicXML importer omits `tu`" upstream

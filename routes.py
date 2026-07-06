@@ -39,8 +39,9 @@ _config_dir = None
 _log = None
 _mxml = None
 
-# Decoded upload size cap. MusicXML is text; real-world scores are well
-# under this. Checked cheaply against the base64 payload length.
+# Decoded upload size cap. MusicXML is text and .mxl is compressed; real-
+# world scores are well under this. Checked cheaply against the base64
+# payload length.
 _MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 # Server-side upload registry: opaque token -> (xml temp path, created-at).
@@ -77,8 +78,8 @@ def setup(app, context):
             return {'error': 'No file data'}
 
         ext = Path(filename).suffix.lower()
-        if ext not in ('.xml', '.musicxml'):
-            return {'error': f'Unsupported format ({ext}). Only .xml / .musicxml files are supported.'}
+        if ext not in ('.xml', '.musicxml', '.mxl'):
+            return {'error': f'Unsupported format ({ext}). Only .xml / .musicxml / .mxl files are supported.'}
 
         # Cheap size bound on the encoded payload (base64 ≈ 4/3 overhead).
         if len(b64) > _MAX_UPLOAD_BYTES * 4 // 3 + 4:

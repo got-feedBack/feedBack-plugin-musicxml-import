@@ -1,8 +1,8 @@
 # feedBack-plugin-musicxml-import
 
-FeedBack plugin. Imports MusicXML (`.xml` / `.musicxml`) scores and produces
-a `.feedpak` using the **notation format** — ready for playback and staff
-rendering via the `staffview` plugin.
+FeedBack plugin. Imports MusicXML (`.xml` / `.musicxml` / compressed
+`.mxl`) scores and produces a `.feedpak` using the **notation format** —
+ready for playback and staff rendering via the `staffview` plugin.
 
 ## Compatibility
 
@@ -16,6 +16,8 @@ own format constant.
 
 ## What gets imported
 
+- Compressed MusicXML (`.mxl`) unwrapped transparently via
+  `META-INF/container.xml`'s primary rootfile
 - Pitch, duration, dots, rests, ties, tuplets (`tu`)
 - Grace notes, typed per spec: `grace: "a"` (acciaccatura,
   `<grace slash="yes">`) / `grace: "p"` (appoggiatura)
@@ -48,7 +50,6 @@ own format constant.
 - **Pedal attribution** — pedal flags attach to the bottom staff (`lh`
   on a grand staff) and, like dynamics, to the preceding note's beat
   (post-annotation style).
-- **No .mxl** — compressed MusicXML not supported; unzip before importing.
 - **Audio is optional by choice** — uncheck "Include synthesized piano
   audio" to skip rendering and write the pack without stems; FluidSynth
   failures are also handled gracefully (pack still created, failure shown
