@@ -64,7 +64,7 @@ Declared in `requirements.txt` (installed by the plugin loader when absent):
 |---|---|
 | `midiutil` | MIDI file generation |
 | `pyyaml` | Manifest serialisation |
-| FluidSynth + GeneralUser-GS.sf2 | Piano audio rendering (via core `gp2midi`) |
+| FluidSynth + GeneralUser-GS.sf2 | **Audio only** — piano rendering via core `gp2midi`; not needed when "Include synthesized piano audio" is unchecked, and its absence never fails the build (see Limitations) |
 
 No third-party XML library required — uses stdlib `xml.etree.ElementTree`.
 

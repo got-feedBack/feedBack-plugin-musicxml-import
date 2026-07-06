@@ -25,6 +25,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   plugin loader only installs from the file; the manifest key was dead
   (deps also ship with core, so nothing broke in practice).
 
+### Fixed
+
+- `pyyaml` pinned to `>=6.0,<7` in `requirements.txt` (was unbounded) —
+  an unpinned future major bump could silently break `manifest.yaml`
+  serialization on a loader-triggered reinstall.
+- README/CONTEXT dependency docs now flag FluidSynth + GeneralUser-GS.sf2
+  as audio-only, not a hard requirement — the "Include synthesized piano
+  audio" checkbox and the graceful audio-failure handling both mean a
+  build can succeed without it.
+
 ### Added
 
 - **Tuplet support** — MusicXML `<time-modification>` now emits the

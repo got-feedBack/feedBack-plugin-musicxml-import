@@ -1,2 +1,2 @@
 midiutil>=1.2.1
-pyyaml
+pyyaml>=6.0,<7
