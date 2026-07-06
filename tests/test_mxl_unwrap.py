@@ -118,6 +118,34 @@ def test_extract_mxl_rejects_empty_archive():
         mxml2notation._extract_mxl(mxl)
 
 
+def test_extract_mxl_resolves_namespaced_container():
+    # container.xml is DTD-defined (no XSD, no namespace) and every known
+    # real-world sample is namespace-less — but that's not a guarantee, so
+    # <rootfile>/<rootfiles> must resolve even if some exporter wraps the
+    # document in a default namespace.
+    container = '''<?xml version="1.0" encoding="UTF-8"?>
+<container xmlns="urn:example:container">
+  <rootfiles>
+    <rootfile full-path="score.xml"/>
+  </rootfiles>
+</container>'''.encode()
+    mxl = _zip({'META-INF/container.xml': container, 'score.xml': _SCORE_XML})
+    assert mxml2notation._extract_mxl(mxl) == _SCORE_XML
+
+
+def test_extract_mxl_rejects_decompression_bomb(monkeypatch):
+    # The upload cap in routes.py only bounds the compressed bytes; a highly
+    # compressible rootfile can still decompress far past it. Shrink the cap
+    # so the test stays cheap, then feed an entry that blows it.
+    monkeypatch.setattr(mxml2notation, '_MXL_MAX_UNCOMPRESSED', 4096)
+    bomb = b'<score>' + b' ' * 100_000 + b'</score>'  # ~100 KB > 4 KB cap
+    mxl = _zip({'META-INF/container.xml': _CONTAINER_XML, 'score.xml': bomb})
+    with pytest.raises(ValueError, match='too large uncompressed'):
+        mxml2notation._extract_mxl(mxl)
+
+
+
+
 def test_parse_musicxml_transparently_unwraps_mxl():
     mxl = _zip({'META-INF/container.xml': _CONTAINER_XML, 'score.xml': _SCORE_XML})
     result_mxl = mxml2notation.parse_musicxml(mxl)
