@@ -40,6 +40,7 @@ import os
 import re
 import zipfile
 
+from collections.abc import Sequence
 from xml.etree import ElementTree as ET
 
 import yaml
@@ -361,10 +362,13 @@ def _build_tempo_map(root: ET.Element) -> list[tuple[int, float]]:
 
 
 def _build_divisions_map(root: ET.Element) -> list[tuple[int, int]]:
-    """Return (abs_div, divisions) at each measure where divisions changes.
+    """Return (abs_div, divisions) at each measure boundary where divisions changes.
 
-    divisions-per-quarter may change at a measure boundary (a mid-*measure*
-    change is a dropped schema-v1 non-feature, but a boundary change is legal).
+    divisions-per-quarter may change at a measure boundary (a legal change);
+    only the measure's first ``<divisions>`` — the boundary value in effect at
+    the measure's start (abs_div) — is honored. A second, mid-measure
+    ``<divisions>`` is not represented here (a mid-measure attribute change is a
+    dropped schema-v1 non-feature), so it can't skew this measure's start scale.
     ``abs_div`` accumulates across measures counted in each measure's own
     divisions, so converting an abs_div that spans a change needs the divisions
     active within each span — see ``_div_to_seconds``. Mirrors the measure walk
@@ -380,10 +384,13 @@ def _build_divisions_map(root: ET.Element) -> list[tuple[int, int]]:
     abs_div = 0
 
     for measure in part.findall('measure'):
-        # <attributes><divisions> applies from this measure's start.
+        # Honor only the boundary (first) <divisions> in the measure; it applies
+        # from the measure's start. Later ones would be mid-measure changes.
+        measure_div_seen = False
         for attr in measure.findall('attributes'):
             d = attr.findtext('divisions')
-            if d:
+            if d and not measure_div_seen:
+                measure_div_seen = True
                 nd = int(d)
                 if nd != divisions:
                     divisions = nd
@@ -411,7 +418,7 @@ def _build_divisions_map(root: ET.Element) -> list[tuple[int, int]]:
     return dmap
 
 
-def _active_in_map(m: list[tuple[int, float]], pos: int, default: float) -> float:
+def _active_in_map(m: Sequence[tuple[int, float]], pos: int, default: float) -> float:
     """Value active at ``pos`` in an ascending (div, value) step map."""
     val = default
     for d, v in m:

@@ -95,6 +95,24 @@ def test_tempo_map_time_correct_after_divisions_change():
         f"90 BPM event should be at 2.0 s, got {at_90[0]['time']}"
 
 
+def test_divisions_map_honors_only_the_boundary_value_per_measure():
+    # A measure whose start declares divisions=1 but which also carries a
+    # (dropped, schema-v1 non-feature) mid-measure divisions change to 4 must
+    # be recorded at its boundary value (1), not skewed by the later change.
+    root = __import__('xml.etree.ElementTree', fromlist=['ElementTree']).fromstring(_score(f'''
+      <measure number="1">
+        <attributes><divisions>1</divisions>
+          <time><beats>4</beats><beat-type>4</beat-type></time>
+          <clef number="1"><sign>G</sign><line>2</line></clef></attributes>
+        {_quarters('C', 2, 1)}
+        <attributes><divisions>4</divisions></attributes>
+        {_quarters('E', 2, 4)}
+      </measure>''').decode())
+    dmap = mxml2notation._build_divisions_map(root)
+    # Only the boundary (0, 1); the mid-measure 4 is not represented.
+    assert dmap == [(0, 1)], f"expected boundary-only map, got {dmap}"
+
+
 def test_constant_divisions_unaffected():
     # Regression guard: with divisions constant, times are unchanged.
     m1 = _M1
