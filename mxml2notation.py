@@ -1,8 +1,9 @@
-"""MusicXML → sloppak notation format conversion library.
+"""MusicXML → feedpak notation format conversion library.
 
 Parses a MusicXML score-partwise file using stdlib xml.etree and produces:
-  - notation_<id>.json payload (NOTATION_FORMAT_PROPOSAL_3 schema)
-  - song_timeline.json payload (beats + sections)
+  - notation_<id>.json payload (feedpak spec §7.6, schema version 1)
+  - song_timeline.json payload (beats + sections + tempo/time-signature
+    maps, feedpak spec §7.4)
   - a standard MIDI file (bytes) for FluidSynth audio rendering
 
 Only the first part is imported. Multi-part scores are not yet supported.
@@ -19,7 +20,7 @@ Known limitations
 - No .mxl (compressed MusicXML — unzip before importing).
 - Schema v1 non-features (ottava / octave-shift, tremolo, notated
   glissando lines, mid-measure key/time/clef changes) are dropped with a
-  logged warning, never approximated (docs/sloppak-spec.md §5.3).
+  logged warning, never approximated (feedpak spec §7.6).
 - Sustain pedal directions are attributed to the bottom staff (lh for a
   grand staff) and, like dynamics, to the preceding note's beat
   (post-annotation style).
@@ -41,7 +42,15 @@ from xml.etree import ElementTree as ET
 
 import yaml
 
-log = logging.getLogger("slopsmith.plugin.musicxml_import")
+log = logging.getLogger("feedBack.plugin.musicxml_import")
+
+# Format version stamped into manifest.yaml (feedpak spec §4.1). Prefer the
+# host's own constant so packs always declare what the running FeedBack
+# writes; the fallback covers CLI / test runs outside the app.
+try:
+    from sloppak import FEEDPAK_VERSION as _FEEDPAK_VERSION
+except ImportError:
+    _FEEDPAK_VERSION = "1.2.0"
 
 # ---------------------------------------------------------------------------
 # Instrument inference
@@ -136,13 +145,35 @@ def _type_to_dur(note_type: str | None) -> int:
     return _TYPE_TO_DUR.get(note_type or '', 8)
 
 
+def _parse_time_modification(note_elem: ET.Element) -> list[int] | None:
+    """MusicXML <time-modification> → notation ``tu`` field.
+
+    Returns ``[actual, normal]`` (feedpak spec §7.6 — e.g. ``[3, 2]`` for a
+    triplet: 3 notes in the written time of 2), or None for non-tuplet
+    notes or degenerate values. Onset/timing already comes from <duration>
+    divisions, which MusicXML pre-scales for tuplets — ``tu`` only informs
+    notated-length math and staff rendering (bracket/number).
+    """
+    tm = note_elem.find('time-modification')
+    if tm is None:
+        return None
+    try:
+        actual = int(tm.findtext('actual-notes') or 0)
+        normal = int(tm.findtext('normal-notes') or 0)
+    except ValueError:
+        return None
+    if actual <= 0 or normal <= 0 or actual == normal:
+        return None
+    return [actual, normal]
+
+
 def _count_dots(note_elem: ET.Element) -> int:
     """Count <dot/> children. Returns 1 or 2; 0 → omit field."""
     return min(2, len(note_elem.findall('dot')))
 
 
 # ---------------------------------------------------------------------------
-# Tempo map (reused logic from old mxml2sloppak)
+# Tempo map (reused logic from the old prototype importer)
 # ---------------------------------------------------------------------------
 
 def _build_tempo_map(root: ET.Element) -> list[tuple[int, float]]:
@@ -495,7 +526,7 @@ def _collect_measure_directions(
                 words = dt.find('words')
                 if words is not None and words.text:
                     result['words'].append((dir_div, words.text.strip()))
-                # Sustain pedal (spd / sph / spu per sloppak-spec §5.3)
+                # Sustain pedal (spd / sph / spu per feedpak spec §7.6)
                 pedal = dt.find('pedal')
                 if pedal is not None:
                     ptype = pedal.get('type', '')
@@ -522,7 +553,7 @@ def _active_dynamic(
 ) -> str | None:
     """Return the dynamic whose position exactly matches beat_div, or None.
 
-    sloppak dyn is a per-beat annotation recording where the symbol appears in
+    The notation dyn field is a per-beat annotation recording where the symbol appears in
     the score, not a persistent level — exact matching is intentional.
     """
     for div, dyn in dynamics:
@@ -556,7 +587,7 @@ def _active_wedge(
 
 
 # ---------------------------------------------------------------------------
-# Sustain pedal (spd / sph / spu — sloppak-spec §5.3)
+# Sustain pedal (spd / sph / spu — feedpak spec §7.6)
 # ---------------------------------------------------------------------------
 
 def _pedal_staff(staves_def: dict[str, str]) -> str:
@@ -585,7 +616,7 @@ def _pedal_flags(
 ) -> tuple[bool, bool, bool]:
     """Return (spd, sph, spu) for the beat at beat_div.
 
-    MusicXML mapping (sloppak-spec §5.3): <pedal type="start"> → spd,
+    MusicXML mapping (feedpak spec §7.6): <pedal type="start"> → spd,
     <pedal type="stop"> → spu, <pedal type="change"> → spu + spd on the
     same beat (re-pedal). Beats strictly inside an active span carry sph.
     pedal_events must be sorted by division.
@@ -722,7 +753,7 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
                 composer = text
             break
 
-    # <identification> credits (sloppak-spec §5.3: rights / lyricist /
+    # <identification> credits (feedpak spec §7.6: rights / lyricist /
     # arranger ride on the notation payload; composer is a fallback for
     # the credit-words heuristic above).
     rights = ''
@@ -789,6 +820,13 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
     measures_out: list[dict] = []
     beats_out: list[dict] = []
     sections_out: list[dict] = []
+    # song_timeline tempo / time-signature maps (feedpak spec §7.4, 1.2.0).
+    # Tempo events are consumed from tempo_map measure by measure so each
+    # event's div→seconds conversion uses the divisions value active in its
+    # own measure (divisions can change mid-score).
+    tempos_out: list[dict] = []
+    ts_changes_out: list[dict] = []
+    tempo_map_idx = 0
     midi_notes: list[tuple[float, float, int, int]] = []
     max_time = 0.0
     section_counters: dict[str, int] = {}
@@ -811,7 +849,7 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
         dropped_features.add(feature)
         log.warning(
             "%s (first seen in measure %s) is not representable in notation "
-            "schema v1 — dropped, not approximated (sloppak-spec §5.3)",
+            "schema v1 — dropped, not approximated (feedpak spec §7.6)",
             feature, measure_number,
         )
 
@@ -831,7 +869,7 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
         # an <attributes> that *changes* time / key / clef after notes have
         # sounded in the measure is a mid-measure change — a schema v1
         # non-feature that MUST be dropped with a warning, never
-        # approximated (sloppak-spec §5.3).
+        # approximated (feedpak spec §7.6).
         notes_seen_in_measure = False
         # Use a division cursor to detect genuinely mid-measure <attributes>
         # changes. Heuristics based on "notes seen" are unreliable in multi-
@@ -840,6 +878,10 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
         # <attributes> block is mid-measure only when the cursor is strictly
         # past the measure start at the point it appears.
         pre_pass_cursor = measure_abs_div_start
+        # Clefs valid for THIS measure's rendering: boundary changes apply
+        # here; a mid-measure change only persists into current_clef for
+        # the following measures (dropped for this one, with the warning).
+        measure_clef = dict(current_clef)
         for elem in measure_elem:
             if elem.tag == 'note':
                 notes_seen_in_measure = True
@@ -904,7 +946,11 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
                     # current_clef now. Without this, every following measure
                     # renders with the old clef even when the change was
                     # correctly placed at the next measure boundary.
+                    # measure_clef is deliberately NOT updated — this
+                    # measure keeps the clef it opened with.
                     _warn_dropped('mid-measure clef change', measure_number)
+                else:
+                    measure_clef[staff_num] = cs
                 current_clef[staff_num] = cs
                 sid = _staff_id(staff_num)
                 staves_seen.add(sid)
@@ -1007,6 +1053,7 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
             note_type = elem.findtext('type')
             dur_val = _type_to_dur(note_type)
             dots = _count_dots(elem)
+            tuplet = _parse_time_modification(elem)
 
             # Advance cursor for non-chord, non-grace notes
             if not is_chord and not is_grace:
@@ -1038,6 +1085,8 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
                 beat: dict = {'t': note_time, 'dur': dur_val, 'rest': True}
                 if dots:
                     beat['dot'] = dots
+                if tuplet:
+                    beat['tu'] = tuplet
                 # Rests on the pedal staff still sit inside a pedal span.
                 if pedal_events_all and sid == _pedal_staff(staves_def):
                     spd, sph, spu = _pedal_flags(note_div, pedal_events_all)
@@ -1108,7 +1157,7 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
             if slur_end:
                 beat_effects['slre'] = True
 
-            # Fermata → typed ferm flag at beat level (sloppak-spec §5.3)
+            # Fermata → typed ferm flag at beat level (feedpak spec §7.6)
             if _parse_fermata(elem):
                 beat_effects['ferm'] = True
 
@@ -1196,8 +1245,10 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
                 beat = {'t': note_time, 'dur': dur_val}
                 if dots:
                     beat['dot'] = dots
+                if tuplet:
+                    beat['tu'] = tuplet
                 if is_grace:
-                    # Typed grace string (sloppak-spec §5.3, GRACE_TYPES):
+                    # Typed grace string (feedpak spec §7.6, GRACE_TYPES):
                     # "a" = acciaccatura (<grace slash="yes">),
                     # "p" = appoggiatura (plain <grace>).
                     grace_elem = elem.find('grace')
@@ -1232,6 +1283,7 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
         if ts != prev_ts:
             measure_dict['ts'] = ts
             prev_ts = ts
+            ts_changes_out.append({'time': measure_dict['t'], 'ts': ts})
 
         groups = _beat_groups(ts_beats, ts_beat_type)
         if groups is not None:
@@ -1262,7 +1314,7 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
                     1 if sid == 'rh' else 2 if sid == 'lh'
                     else int(sid.split('_')[-1]) if sid.startswith('staff_') else 1
                 )
-                clef_now = current_clef.get(staff_num_for_id)
+                clef_now = measure_clef.get(staff_num_for_id)
                 if clef_now and prev_clef.get(sid) != clef_now:
                     staff_dict['clef'] = clef_now
                     prev_clef[sid] = clef_now
@@ -1272,6 +1324,39 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
             measure_dict['staves'] = measure_staves
 
         measures_out.append(measure_dict)
+
+        # Consume tempo-map events that fall inside this measure, converting
+        # with the divisions value active here. pre_pass_cursor ended the
+        # attribute pre-pass at the measure's net end division.
+        measure_end_div = max(pre_pass_cursor, abs_div)
+        while (tempo_map_idx < len(tempo_map)
+               and tempo_map[tempo_map_idx][0] < measure_end_div):
+            ev_div, ev_bpm = tempo_map[tempo_map_idx]
+            tempos_out.append({
+                'time': round(_div_to_seconds(ev_div, divisions, tempo_map), 4),
+                'bpm': round(ev_bpm, 3),
+            })
+            tempo_map_idx += 1
+
+    # ── Finalize tempo map for song_timeline ────────────────────────────────
+    # Leftover events at/after the final measure's end (rare) convert with
+    # the last-seen divisions.
+    while tempo_map_idx < len(tempo_map):
+        ev_div, ev_bpm = tempo_map[tempo_map_idx]
+        tempos_out.append({
+            'time': round(_div_to_seconds(ev_div, divisions, tempo_map), 4),
+            'bpm': round(ev_bpm, 3),
+        })
+        tempo_map_idx += 1
+    # Same-time events collapse to the last one (the builder's default
+    # 120 BPM seed at div 0 loses to a score-declared initial tempo);
+    # consecutive equal BPMs are redundant per §7.4's until-next-entry rule.
+    tempos_deduped: list[dict] = []
+    for ev in tempos_out:
+        if tempos_deduped and tempos_deduped[-1]['time'] == ev['time']:
+            tempos_deduped[-1] = ev
+        elif not tempos_deduped or tempos_deduped[-1]['bpm'] != ev['bpm']:
+            tempos_deduped.append(ev)
 
     # ── Deduplicate beats ───────────────────────────────────────────────────
     seen_beat_times: set[float] = set()
@@ -1308,7 +1393,7 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
         'staves': staves_list,
         'measures': measures_out,
     }
-    # Optional credits (sloppak-spec §5.3) — omit when absent.
+    # Optional credits (feedpak spec §7.6) — omit when absent.
     if rights:
         notation['rights'] = rights
     if lyricist:
@@ -1316,9 +1401,11 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
     if arranger:
         notation['arranger'] = arranger
 
-    # ── Song timeline payload ───────────────────────────────────────────────
+    # ── Song timeline payload (feedpak spec §7.4) ───────────────────────────
     song_timeline = {
         'version': 1,
+        'tempos': tempos_deduped,
+        'time_signatures': ts_changes_out,
         'beats': [{'time': b['time'], 'measure': b['measure']} for b in beats_deduped],
         'sections': [
             {'time': s['time'], 'name': s['name'], 'number': s.get('number', 1)}
@@ -1382,21 +1469,24 @@ def _build_midi(
 
 
 # ---------------------------------------------------------------------------
-# Sloppak zip builder
+# Feedpak zip builder
 # ---------------------------------------------------------------------------
 
-def build_sloppak_zip(
+def build_feedpak_zip(
     result: dict,
     audio_path: str | None,
     title: str,
     composer: str,
 ) -> bytes:
-    """Assemble a .sloppak zip from parse result + rendered audio.
+    """Assemble a .feedpak zip from parse result + rendered audio.
 
-    Manifest shape (notation format):
-      - arrangements[0]: type=piano, notation=notation_keys.json, no file:
-      - song_timeline: song_timeline.json
-      - stems: [full.ogg] when audio rendered successfully
+    Manifest shape (feedpak spec §5):
+      - feedpak_version stamped from the host's constant (§4.1)
+      - arrangements[0]: notation-only (notation=<file>, no file: — §5.2)
+      - song_timeline: song_timeline.json (§7.4)
+      - stems: [full.ogg] when audio rendered successfully; omitted
+        otherwise — such a pack is a local authoring intermediate under
+        the §5.3.2 carve-out, not portable until stems are added
 
     Returns zip bytes.
     """
@@ -1408,22 +1498,24 @@ def build_sloppak_zip(
     notation_filename = f'notation_{arr_id}.json'
     arr_name = arr_id.replace('_', ' ').title()
 
+    arrangement: dict = {
+        'id': arr_id,
+        'name': arr_name,
+        # file: intentionally omitted — spec §5.2 allows notation-only
+        # arrangements when notation: is present.
+        'notation': notation_filename,
+    }
+    if instrument != 'unknown':
+        # `type` is an optional instrument hint with a known vocabulary
+        # (§5.2); omit it rather than emit a non-vocabulary placeholder.
+        arrangement['type'] = instrument
+
     manifest: dict = {
+        'feedpak_version': _FEEDPAK_VERSION,
         'title': title,
         'artist': composer or 'Unknown',
-        'album': '',
-        'year': None,
         'duration': duration,
-        'arrangements': [
-            {
-                'id': arr_id,
-                'name': arr_name,
-                'type': instrument,
-                'notation': notation_filename,
-                # file: intentionally omitted — loader supports this when
-                # notation: is present (feat/notation-format branch).
-            }
-        ],
+        'arrangements': [arrangement],
         'song_timeline': 'song_timeline.json',
     }
 
@@ -1449,7 +1541,7 @@ def build_sloppak_zip(
             zf.write(audio_path, 'stems/full.ogg')
         elif audio_path:
             log.warning(
-                "Audio path %r does not exist — sloppak created without audio",
+                "Audio path %r does not exist — feedpak created without audio",
                 audio_path,
             )
 
