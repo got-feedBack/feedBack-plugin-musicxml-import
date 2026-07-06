@@ -17,7 +17,9 @@ Known limitations
   (grace: "a" = acciaccatura / MusicXML <grace slash="yes">, grace: "p" =
   appoggiatura / plain <grace>) but are absent from the MIDI audio output.
 - No repeats / da capo / segno expansion — each measure plays once.
-- No .mxl (compressed MusicXML — unzip before importing).
+- Compressed MusicXML (.mxl) is unwrapped transparently — the primary
+  rootfile named in META-INF/container.xml, or the first top-level .xml
+  entry as a fallback for malformed packages missing that manifest.
 - Schema v1 non-features (ottava / octave-shift, tremolo, notated
   glissando lines, mid-measure key/time/clef changes) are dropped with a
   logged warning, never approximated (feedpak spec §7.6).
@@ -51,6 +53,122 @@ try:
     from sloppak import FEEDPAK_VERSION as _FEEDPAK_VERSION
 except ImportError:
     _FEEDPAK_VERSION = "1.2.0"
+
+# ---------------------------------------------------------------------------
+# Compressed MusicXML (.mxl) unwrapping
+# ---------------------------------------------------------------------------
+
+_MXL_MAGIC = b'PK\x03\x04'  # local-file-header signature — .mxl is a zip
+
+# Decompressed-size cap for a single .mxl member. The upload cap in routes.py
+# only bounds the COMPRESSED bytes, and zip ratios on repetitive XML routinely
+# exceed 100:1 — so an unbounded read of a crafted archive can exhaust memory
+# (decompression bomb). Real scores decompress to a few MB; 100 MB is generous
+# headroom.
+_MXL_MAX_UNCOMPRESSED = 100 * 1024 * 1024
+
+
+def _is_mxl(data: bytes) -> bool:
+    return data[:4] == _MXL_MAGIC
+
+
+def _local_name(tag: str) -> str:
+    """Strip a `{namespace}` prefix from an ElementTree tag, if present."""
+    return tag.rsplit('}', 1)[-1]
+
+
+def _mxl_rootfile_path(container_xml: bytes) -> str | None:
+    """Extract the primary rootfile path from META-INF/container.xml.
+
+    Per the W3C MusicXML compressed-file convention, the first
+    <rootfile full-path="..."> entry is the main score; any further
+    entries are alternate renditions (e.g. a PDF) and are ignored.
+
+    container.xml is defined by a DTD (no XSD, no namespace) and every
+    real-world sample uses no namespace — but that's not a guarantee some
+    exporter won't wrap the document in one, so <rootfile> is matched by
+    local name rather than exact tag.
+    """
+    try:
+        root = ET.fromstring(container_xml)
+    except ET.ParseError:
+        return None
+    rootfile = next(
+        (el for el in root.iter() if _local_name(el.tag) == 'rootfile'), None
+    )
+    if rootfile is None:
+        return None
+    path = rootfile.get('full-path')
+    return path.strip() if path else None
+
+
+def _read_zip_member(zf: zipfile.ZipFile, name: str) -> bytes:
+    """Read a zip member, bounding decompressed size to guard against bombs.
+
+    Rejects entries whose declared uncompressed size exceeds the cap before
+    decompressing anything — the primary defense, since a DEFLATE bomb's
+    header accurately declares its (huge) uncompressed size. The bounded
+    read is defensive redundancy on top of that check, not a substitute for
+    it: CPython's zipfile already refuses to hand back more than the
+    declared size for a well-formed archive.
+    """
+    limit = _MXL_MAX_UNCOMPRESSED
+    if zf.getinfo(name).file_size > limit:
+        raise ValueError(
+            f".mxl entry {name!r} is too large uncompressed (> {limit} byte cap)"
+        )
+    with zf.open(name) as fh:
+        data = fh.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError(
+            f".mxl entry {name!r} exceeded the {limit} byte cap while decompressing"
+        )
+    return data
+
+
+def _extract_mxl(mxl_bytes: bytes) -> bytes:
+    """Unwrap a compressed MusicXML (.mxl) archive to raw MusicXML bytes.
+
+    Resolves the primary score via META-INF/container.xml when present;
+    falls back to the first top-level *.xml entry (outside META-INF, and
+    not the optional uncompressed 'mimetype' entry) for malformed
+    packages some exporters produce without a manifest.
+    """
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(mxl_bytes))
+    except zipfile.BadZipFile as e:
+        raise ValueError(f"Invalid .mxl archive: {e}") from e
+
+    with zf:
+        names = zf.namelist()
+        rootfile_path = None
+        if 'META-INF/container.xml' in names:
+            rootfile_path = _mxl_rootfile_path(
+                _read_zip_member(zf, 'META-INF/container.xml')
+            )
+
+        if rootfile_path:
+            # Reject traversal/absolute paths; the entry must resolve inside
+            # the archive's own namelist, not the filesystem.
+            if rootfile_path.startswith('/') or '..' in rootfile_path.split('/'):
+                raise ValueError(f"Unsafe rootfile path in .mxl: {rootfile_path!r}")
+            if rootfile_path not in names:
+                raise ValueError(
+                    f".mxl container.xml references missing entry {rootfile_path!r}"
+                )
+            return _read_zip_member(zf, rootfile_path)
+
+        # Fallback: first top-level .xml entry, excluding META-INF/*.
+        candidates = sorted(
+            n for n in names
+            if n.lower().endswith('.xml') and not n.startswith('META-INF/')
+        )
+        if not candidates:
+            raise ValueError(
+                ".mxl archive has no META-INF/container.xml and no .xml entry"
+            )
+        return _read_zip_member(zf, candidates[0])
+
 
 # ---------------------------------------------------------------------------
 # Instrument inference
@@ -713,6 +831,10 @@ def _staff_id(staff_number: int) -> str:
 def parse_musicxml(xml_bytes: bytes) -> dict:
     """Parse MusicXML bytes and return a conversion result dict.
 
+    Transparently unwraps compressed MusicXML (.mxl) — detected by its zip
+    magic number, not by filename, so callers don't need to branch on
+    extension.
+
     Returns:
         {
           'title': str,
@@ -725,6 +847,9 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
           'measure_count': int,
         }
     """
+    if _is_mxl(xml_bytes):
+        xml_bytes = _extract_mxl(xml_bytes)
+
     root = ET.fromstring(xml_bytes)
 
     if root.tag != 'score-partwise':
