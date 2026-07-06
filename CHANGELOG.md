@@ -27,6 +27,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **Timing under a mid-score `<divisions>` change** (issue #5) — `abs_div`
+  accumulates across measures each counted in its own divisions, so the
+  div→seconds conversion was wrong for every beat/note/section/tempo after a
+  divisions change (it divided the whole span by a single scalar). It now
+  walks a `divisions_map` and integrates each sub-span with the divisions
+  active in it; constant-divisions scores are unaffected.
 - `pyyaml` pinned to `>=6.0,<7` in `requirements.txt` (was unbounded) —
   an unpinned future major bump could silently break `manifest.yaml`
   serialization on a loader-triggered reinstall.
