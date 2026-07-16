@@ -923,6 +923,9 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
           'midi_bytes': bytes,
           'part_names': list[str],
           'measure_count': int,
+          'flat_notes': list[dict],  # {'t','sus','midi','staff'} — ties
+                                     # folded, grace skipped, staff = the
+                                     # authored hand (rh/lh) provenance
         }
     """
     if _is_mxl(xml_bytes):
@@ -1034,6 +1037,14 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
     ts_changes_out: list[dict] = []
     tempo_map_idx = 0
     midi_notes: list[tuple[float, float, int, int]] = []
+    # Flat editor notes: {'t', 'sus', 'midi', 'staff'} — staff provenance is
+    # the authored hand assignment (rh/lh). Unlike midi_notes, tied
+    # continuations FOLD into the origin note's sustain (one held note, not
+    # a re-strike) so a piano-roll editor sees the score's note objects.
+    flat_notes: list[dict] = []
+    # Open-tie origin per (staff_id, voice_id, midi): the flat note a tied
+    # continuation extends. Mirrors tie_open's keying.
+    flat_open: dict[tuple[str, str, int], dict] = {}
     max_time = 0.0
     section_counters: dict[str, int] = {}
 
@@ -1475,6 +1486,25 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
                 velocity = 80
                 midi_notes.append((note_time, sustain, midi, velocity))
 
+            # Flat-note accumulation (skip grace notes, like the MIDI pass).
+            # A tied continuation extends its origin note's sustain instead
+            # of emitting a new note; the origin stays registered while the
+            # tie chain continues ('start' alongside the 'stop').
+            if not is_grace:
+                if is_tied_continuation and tie_key in flat_open:
+                    origin = flat_open[tie_key]
+                    end = note_time + sustain
+                    if end > origin['t'] + origin['sus']:
+                        origin['sus'] = round(end - origin['t'], 4)
+                    if 'start' not in tie_types:
+                        del flat_open[tie_key]
+                elif sustain > 0:
+                    flat = {'t': note_time, 'sus': sustain,
+                            'midi': midi, 'staff': sid}
+                    flat_notes.append(flat)
+                    if 'start' in tie_types:
+                        flat_open[tie_key] = flat
+
         # ── Flush measure ──────────────────────────────────────────────────
         ts = [ts_beats, ts_beat_type]
         measure_dict: dict = {'idx': measure_number, 't': round(
@@ -1631,6 +1661,68 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
         'midi_bytes': midi_bytes,
         'part_names': part_names,
         'measure_count': len(measures_out),
+        'flat_notes': sorted(flat_notes, key=lambda n: (n['t'], n['midi'])),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Editor arrangement builder (the parse-arrangement endpoint's payload)
+# ---------------------------------------------------------------------------
+
+# The editor's runtime lane/roll router is prefix-anchored
+# (/^(keys|piano|keyboard|synth)/i) and its save-side keys detector is
+# word-boundary — a name must satisfy the prefix rule or the arrangement
+# renders as a 6-lane guitar chart instead of a piano roll.
+_KEYS_NAME_RE = re.compile(r'^(keys|piano|keyboard|synth)', re.IGNORECASE)
+
+
+def editor_arrangement(result: dict) -> dict:
+    """Map a ``parse_musicxml`` result to a ready editor keys arrangement.
+
+    Returns the shape the editor plugin's Add-Keys flow appends directly:
+    flat notes in the editor's packed pitch encoding (``midi = string*24 +
+    fret``), the authored hand carried per note as ``techniques.hand``
+    (``'rh'``/``'lh'`` from grand-staff provenance; other staves — e.g. an
+    organ pedal staff — are left unassigned), and the full notation payload
+    stashed under ``notation`` for the editor's authored-notation save rail
+    (which otherwise re-derives hand splits heuristically).
+    """
+    notes = []
+    for n in result.get('flat_notes') or []:
+        midi = n['midi']
+        note = {
+            'time': n['t'],
+            'string': midi // 24,
+            'fret': midi % 24,
+            'sustain': n['sus'],
+            'techniques': (
+                {'hand': n['staff']} if n.get('staff') in ('rh', 'lh') else {}
+            ),
+        }
+        notes.append(note)
+
+    # A missing <part-name> falls back to the score-part id ("P1", "P2", …)
+    # upstream — a placeholder, not a name; don't leak it into the label.
+    part = next(
+        (p.strip() for p in result.get('part_names') or []
+         if p and p.strip() and not re.fullmatch(r'P\d+', p.strip())),
+        '',
+    )
+    if part and _KEYS_NAME_RE.match(part):
+        name = part
+    elif part:
+        name = f'Keys — {part}'
+    else:
+        name = 'Keys'
+
+    return {
+        'name': name,
+        'tuning': [0, 0, 0, 0, 0, 0],
+        'capo': 0,
+        'notes': notes,
+        'chords': [],
+        'chord_templates': [],
+        'notation': result.get('notation'),
     }
 
 
