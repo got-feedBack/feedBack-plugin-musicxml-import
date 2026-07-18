@@ -227,9 +227,9 @@ def test_endpoint_rejects_bad_base64():
     client = _client()
     resp = client.post(
         '/api/plugins/musicxml_import/parse-arrangement',
-        json={'filename': 'score.xml', 'data': '!!!not-base64!!!'},
+        json={'filename': 'score.xml', 'data': 'aGVs!bG8='},
     )
-    assert 'error' in resp.json()
+    assert resp.json() == {'error': 'Invalid base64 data'}
 
 
 def test_endpoint_reports_parse_failure_as_error():

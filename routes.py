@@ -85,7 +85,7 @@ def _decode_upload(data: dict) -> bytes | dict:
         return {'error': 'File too large (max 20 MB)'}
 
     try:
-        return base64.b64decode(b64)
+        return base64.b64decode(b64, validate=True)
     except Exception:
         return {'error': 'Invalid base64 data'}
 
@@ -151,7 +151,9 @@ def setup(app, context):
             return xml_bytes
 
         try:
-            result = _mxml.parse_musicxml(xml_bytes)
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None, _mxml.parse_musicxml, xml_bytes)
         except Exception as e:
             _log.exception('MusicXML parse error')
             return {'error': f'Failed to parse: {e}'}
