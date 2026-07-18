@@ -112,6 +112,38 @@ def test_declared_guitar_program_is_recognized_without_tab():
     assert mxml2notation._part_instrument(p1, declared) == 'guitar'
 
 
+def test_extended_fretted_fallback_uses_matching_standard_tuning():
+    guitar = mxml2notation.editor_arrangement({
+        'instrument': 'guitar', 'tuning': [0] * 7,
+        'flat_notes': [{'t': 0, 'sus': 1, 'midi': 35, 'staff': 'rh'}],
+        'selected_part_name': 'Seven String Guitar',
+    })
+    assert guitar['notes'][0]['string'] == 0
+    assert guitar['notes'][0]['fret'] == 0
+
+    bass = mxml2notation.editor_arrangement({
+        'instrument': 'bass_guitar', 'tuning': [0] * 5,
+        'flat_notes': [{'t': 0, 'sus': 1, 'midi': 23, 'staff': 'rh'}],
+        'selected_part_name': 'Five String Bass',
+    })
+    assert bass['notes'][0]['string'] == 0
+    assert bass['notes'][0]['fret'] == 0
+
+
+def test_arrangement_name_comes_from_selected_part():
+    arr = mxml2notation.editor_arrangement({
+        'instrument': 'piano', 'selected_part_name': 'Piano',
+        'part_names': ['MusicXML Part', 'Piano'], 'flat_notes': [],
+    })
+    assert arr['name'] == 'Piano'
+
+    unnamed = mxml2notation.editor_arrangement({
+        'instrument': 'piano', 'selected_part_name': 'P2',
+        'part_names': ['Unrelated Part', 'P2'], 'flat_notes': [],
+    })
+    assert unnamed['name'] == 'Keys'
+
+
 # ── flat_notes semantics ────────────────────────────────────────────────────
 
 def test_flat_notes_carry_staff_provenance():

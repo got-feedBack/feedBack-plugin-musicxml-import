@@ -240,6 +240,13 @@ def _infer_instrument(part_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 _GUITAR_MIDI_PROGRAMS = set(range(25, 33))  # MusicXML is 1-based: guitars
+_FRETTED_OPEN_PITCHES = {
+    'guitar': {6: [40, 45, 50, 55, 59, 64],
+               7: [35, 40, 45, 50, 55, 59, 64],
+               8: [30, 35, 40, 45, 50, 55, 59, 64]},
+    'bass_guitar': {4: [28, 33, 38, 43], 5: [23, 28, 33, 38, 43],
+                    6: [23, 28, 33, 38, 43, 48]},
+}
 
 
 def _score_parts_by_id(root: ET.Element) -> dict[str, ET.Element]:
@@ -341,12 +348,7 @@ def _part_fretting(part: ET.Element, instrument: str) -> tuple[list[int], int, i
             pass
     if not count:
         count = 4 if instrument == 'bass_guitar' else 6
-    guitar_open = {6: [40, 45, 50, 55, 59, 64],
-                   7: [35, 40, 45, 50, 55, 59, 64],
-                   8: [30, 35, 40, 45, 50, 55, 59, 64]}
-    bass_open = {4: [28, 33, 38, 43], 5: [23, 28, 33, 38, 43],
-                 6: [23, 28, 33, 38, 43, 48]}
-    standard = (bass_open if instrument == 'bass_guitar' else guitar_open).get(count)
+    standard = _FRETTED_OPEN_PITCHES.get(instrument, {}).get(count)
     if standard and len(tunings) == count:
         tuning = [tunings[i + 1] - standard[i] for i in range(count)]
     else:
@@ -1831,8 +1833,8 @@ def editor_arrangement(result: dict) -> dict:
             techniques = {}
         elif fretted:
             tuning = result.get('tuning') or [0] * (4 if instrument == 'bass_guitar' else 6)
-            standard = ([28, 33, 38, 43] if instrument == 'bass_guitar'
-                        else [40, 45, 50, 55, 59, 64])
+            standard = (_FRETTED_OPEN_PITCHES.get(instrument, {}).get(len(tuning))
+                        or [])
             opens = [base + (tuning[i] if i < len(tuning) else 0)
                      for i, base in enumerate(standard[:len(tuning)])]
             candidates = [(midi - opened, i) for i, opened in enumerate(opens)
@@ -1860,10 +1862,15 @@ def editor_arrangement(result: dict) -> dict:
                 'capo': result.get('capo', 0), 'notes': notes, 'chords': [],
                 'chord_templates': [], 'notation': result.get('notation')}
     part = next(
-        (p.strip() for p in result.get('part_names') or []
-         if p and p.strip() and not re.fullmatch(r'P\d+', p.strip())),
-        '',
-    )
+        (p.strip() for p in [result.get('selected_part_name')]
+         if p and p.strip() and not re.fullmatch(r'P\d+', p.strip())), '')
+    if not part and 'selected_part_name' not in result:
+        # Backward-compatible for callers constructing a pre-selection result.
+        part = next(
+            (p.strip() for p in result.get('part_names') or []
+             if p and p.strip() and not re.fullmatch(r'P\d+', p.strip())),
+            '',
+        )
     if part and _KEYS_NAME_RE.match(part):
         name = part
     elif part:
