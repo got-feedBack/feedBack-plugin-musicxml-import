@@ -236,6 +236,127 @@ def _infer_instrument(part_name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Instrument and part selection
+# ---------------------------------------------------------------------------
+
+_GUITAR_MIDI_PROGRAMS = set(range(25, 33))  # MusicXML is 1-based: guitars
+
+
+def _score_parts_by_id(root: ET.Element) -> dict[str, ET.Element]:
+    part_list = root.find('part-list')
+    if part_list is None:
+        return {}
+    return {sp.get('id', ''): sp for sp in part_list.findall('score-part')}
+
+
+def _part_instrument(part: ET.Element, score_part: ET.Element | None) -> str:
+    """Infer a part's instrument from structural and declared MusicXML data.
+
+    TAB is stronger evidence than a generic/hidden part name. Explicit sound
+    metadata and MIDI programs cover standard-notation guitar exports.
+    """
+    name = ''
+    sounds: list[str] = []
+    programs: list[int] = []
+    if score_part is not None:
+        name = score_part.findtext('part-name') or ''
+        sounds = [
+            (node.findtext('instrument-sound') or '').strip().lower()
+            for node in score_part.findall('score-instrument')
+        ]
+        for node in score_part.findall('midi-instrument'):
+            try:
+                programs.append(int(node.findtext('midi-program') or 0))
+            except ValueError:
+                pass
+
+    declared = ' '.join(sounds)
+    named = _infer_instrument(name)
+    if named == 'bass_guitar' or ('bass' in declared and 'guitar' in declared):
+        return 'bass_guitar'
+    if named == 'guitar' or 'guitar' in declared:
+        return 'guitar'
+    if any((clef.findtext('sign') or '').strip().upper() == 'TAB'
+           for clef in part.findall('.//clef')):
+        return 'guitar'
+    if any(program in _GUITAR_MIDI_PROGRAMS for program in programs):
+        return 'guitar'
+    return named
+
+
+def _select_part(root: ET.Element) -> tuple[ET.Element, str, str]:
+    """Choose the richest playable part and return (part, name, instrument).
+
+    Many notation programs export a standard staff and a parallel TAB staff as
+    separate parts. The TAB part owns the authored string/fret positions and
+    must win over document order. Otherwise explicit instrument data wins,
+    with the historical first-part behavior as the final tie-break.
+    """
+    parts = root.findall('part')
+    if not parts:
+        raise ValueError("No <part> elements found in score.")
+    declared = _score_parts_by_id(root)
+    ranked = []
+    for index, part in enumerate(parts):
+        score_part = declared.get(part.get('id', ''))
+        name = ((score_part.findtext('part-name') if score_part is not None else '')
+                or part.get('id') or 'Part')
+        instrument = _part_instrument(part, score_part)
+        tab = any((clef.findtext('sign') or '').strip().upper() == 'TAB'
+                  for clef in part.findall('.//clef'))
+        positioned = sum(
+            1 for note in part.findall('.//note')
+            if note.find('notations/technical/string') is not None
+            and note.find('notations/technical/fret') is not None
+        )
+        tuning = bool(part.findall('.//staff-details/staff-tuning'))
+        score = ((10000 if positioned else 0) + (1000 if tab else 0)
+                 + (100 if tuning else 0)
+                 + (10 if instrument != 'unknown' else 0) - index)
+        ranked.append((score, part, name, instrument))
+    _, part, name, instrument = max(ranked, key=lambda row: row[0])
+    return part, name, instrument
+
+
+def _part_fretting(part: ET.Element, instrument: str) -> tuple[list[int], int, int]:
+    """Return (editor tuning offsets, capo, string count) for a fretted part."""
+    details = next(iter(part.findall('.//staff-details')), None)
+    tunings: dict[int, int] = {}
+    if details is not None:
+        for node in details.findall('staff-tuning'):
+            try:
+                line = int(node.get('line') or 0)
+                step = node.findtext('tuning-step') or 'E'
+                alter = int(float(node.findtext('tuning-alter') or 0))
+                octave = int(node.findtext('tuning-octave') or 2)
+                if line > 0:
+                    tunings[line] = _pitch_to_midi(step, alter, octave)
+            except (TypeError, ValueError, KeyError):
+                pass
+    count = max(tunings, default=0)
+    if not count and details is not None:
+        try:
+            count = int(details.findtext('staff-lines') or 0)
+        except ValueError:
+            pass
+    if not count:
+        count = 4 if instrument == 'bass_guitar' else 6
+    guitar_open = {6: [40, 45, 50, 55, 59, 64],
+                   7: [35, 40, 45, 50, 55, 59, 64],
+                   8: [30, 35, 40, 45, 50, 55, 59, 64]}
+    bass_open = {4: [28, 33, 38, 43], 5: [23, 28, 33, 38, 43],
+                 6: [23, 28, 33, 38, 43, 48]}
+    standard = (bass_open if instrument == 'bass_guitar' else guitar_open).get(count)
+    if standard and len(tunings) == count:
+        tuning = [tunings[i + 1] - standard[i] for i in range(count)]
+    else:
+        tuning = [0] * count
+    try:
+        capo = int(details.findtext('capo') or 0) if details is not None else 0
+    except ValueError:
+        capo = 0
+    return tuning, capo, count
+
 # Pitch helpers
 # ---------------------------------------------------------------------------
 
@@ -295,14 +416,16 @@ def _count_dots(note_elem: ET.Element) -> int:
 # Tempo map (reused logic from the old prototype importer)
 # ---------------------------------------------------------------------------
 
-def _build_tempo_map(root: ET.Element) -> list[tuple[int, float]]:
-    """Return (divisions_elapsed, bpm) events from the first part."""
+def _build_tempo_map(root: ET.Element,
+                     part: ET.Element | None = None) -> list[tuple[int, float]]:
+    """Return (divisions_elapsed, bpm) events from the selected part."""
     events: list[tuple[int, float]] = [(0, 120.0)]
     parts = root.findall('part')
     if not parts:
         return events
 
-    part = parts[0]
+    if part is None:
+        part = parts[0]
     divisions = 1
     abs_div = 0
 
@@ -361,7 +484,8 @@ def _build_tempo_map(root: ET.Element) -> list[tuple[int, float]]:
     return events
 
 
-def _build_divisions_map(root: ET.Element) -> list[tuple[int, int]]:
+def _build_divisions_map(root: ET.Element,
+                         part: ET.Element | None = None) -> list[tuple[int, int]]:
     """Return (abs_div, divisions) at each measure boundary where divisions changes.
 
     divisions-per-quarter may change at a measure boundary (a legal change);
@@ -379,7 +503,8 @@ def _build_divisions_map(root: ET.Element) -> list[tuple[int, int]]:
     if not parts:
         return dmap
 
-    part = parts[0]
+    if part is None:
+        part = parts[0]
     divisions = 1
     abs_div = 0
 
@@ -987,20 +1112,14 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
             name = sp.findtext('part-name') or sp.get('id') or 'Part'
             part_names.append(name)
 
-    instrument = _infer_instrument(part_names[0]) if part_names else 'unknown'
+    part, selected_part_name, instrument = _select_part(root)
+    tuning, capo, string_count = _part_fretting(part, instrument)
 
     # ── Tempo map ───────────────────────────────────────────────────────────
-    tempo_map = _build_tempo_map(root)
+    tempo_map = _build_tempo_map(root, part)
     # divisions-per-quarter can change at measure boundaries; _div_to_seconds
     # needs the value active in each span (issue #5), not a single scalar.
-    divisions_map = _build_divisions_map(root)
-
-    # ── Parse first part only ───────────────────────────────────────────────
-    parts = root.findall('part')
-    if not parts:
-        raise ValueError("No <part> elements found in score.")
-
-    part = parts[0]
+    divisions_map = _build_divisions_map(root, part)
 
     # State that persists across measures
     divisions = 1
@@ -1501,6 +1620,17 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
                 elif sustain > 0:
                     flat = {'t': note_time, 'sus': sustain,
                             'midi': midi, 'staff': sid}
+                    tech = elem.find('notations/technical')
+                    if tech is not None:
+                        try:
+                            xml_string = int(tech.findtext('string') or 0)
+                            fret = int(tech.findtext('fret') or -1)
+                            if 1 <= xml_string <= string_count and fret >= 0:
+                                # MusicXML string 1 is highest; editor 0 is lowest.
+                                flat['string'] = string_count - xml_string
+                                flat['fret'] = fret
+                        except ValueError:
+                            pass
                     flat_notes.append(flat)
                     if 'start' in tie_types:
                         flat_open[tie_key] = flat
@@ -1660,6 +1790,10 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
         'song_timeline': song_timeline,
         'midi_bytes': midi_bytes,
         'part_names': part_names,
+        'selected_part_id': part.get('id', ''),
+        'selected_part_name': selected_part_name,
+        'tuning': tuning,
+        'capo': capo,
         'measure_count': len(measures_out),
         'flat_notes': sorted(flat_notes, key=lambda n: (n['t'], n['midi'])),
     }
@@ -1677,7 +1811,7 @@ _KEYS_NAME_RE = re.compile(r'^(keys|piano|keyboard|synth)', re.IGNORECASE)
 
 
 def editor_arrangement(result: dict) -> dict:
-    """Map a ``parse_musicxml`` result to a ready editor keys arrangement.
+    """Map a ``parse_musicxml`` result to a ready editor arrangement.
 
     Returns the shape the editor plugin's Add-Keys flow appends directly:
     flat notes in the editor's packed pitch encoding (``midi = string*24 +
@@ -1687,22 +1821,44 @@ def editor_arrangement(result: dict) -> dict:
     stashed under ``notation`` for the editor's authored-notation save rail
     (which otherwise re-derives hand splits heuristically).
     """
+    instrument = result.get('instrument', 'unknown')
+    fretted = instrument in ('guitar', 'bass_guitar')
     notes = []
     for n in result.get('flat_notes') or []:
         midi = n['midi']
+        if fretted and 'string' in n and 'fret' in n:
+            string, fret = n['string'], n['fret']
+            techniques = {}
+        elif fretted:
+            tuning = result.get('tuning') or [0] * (4 if instrument == 'bass_guitar' else 6)
+            standard = ([28, 33, 38, 43] if instrument == 'bass_guitar'
+                        else [40, 45, 50, 55, 59, 64])
+            opens = [base + (tuning[i] if i < len(tuning) else 0)
+                     for i, base in enumerate(standard[:len(tuning)])]
+            candidates = [(midi - opened, i) for i, opened in enumerate(opens)
+                          if 0 <= midi - opened <= 24]
+            fret, string = min(candidates, default=(midi % 24, midi // 24))
+            techniques = {}
+        else:
+            string, fret = midi // 24, midi % 24
+            techniques = ({'hand': n['staff']}
+                          if n.get('staff') in ('rh', 'lh') else {})
         note = {
             'time': n['t'],
-            'string': midi // 24,
-            'fret': midi % 24,
+            'string': string,
+            'fret': fret,
             'sustain': n['sus'],
-            'techniques': (
-                {'hand': n['staff']} if n.get('staff') in ('rh', 'lh') else {}
-            ),
+            'techniques': techniques,
         }
         notes.append(note)
 
     # A missing <part-name> falls back to the score-part id ("P1", "P2", …)
     # upstream — a placeholder, not a name; don't leak it into the label.
+    if fretted:
+        name = 'Bass' if instrument == 'bass_guitar' else 'Lead'
+        return {'name': name, 'tuning': result.get('tuning') or [],
+                'capo': result.get('capo', 0), 'notes': notes, 'chords': [],
+                'chord_templates': [], 'notation': result.get('notation')}
     part = next(
         (p.strip() for p in result.get('part_names') or []
          if p and p.strip() and not re.fullmatch(r'P\d+', p.strip())),

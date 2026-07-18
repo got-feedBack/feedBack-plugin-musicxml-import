@@ -7,10 +7,10 @@ Endpoints:
     Saves the raw bytes to a temp file for the build step.
 
   POST /api/plugins/musicxml_import/parse-arrangement
-    Receives a MusicXML file as base64 and returns a ready editor keys
-    arrangement (the editor plugin's Add-Keys ▸ MusicXML path): flat
-    notes with authored per-note hand assignments from the grand-staff
-    split, plus the full notation payload for the editor's
+    Receives MusicXML as base64 and returns a ready editor arrangement.
+    Grand-staff scores carry authored hand assignments; guitar/TAB scores
+    carry their authored tuning and string/fret positions. The full notation
+    payload is included for the editor's
     authored-notation save rail. Stateless — nothing is kept server-side.
 
   WS   /ws/plugins/musicxml_import/build
@@ -136,13 +136,14 @@ def setup(app, context):
 
     @app.post('/api/plugins/musicxml_import/parse-arrangement')
     async def parse_arrangement(data: dict):
-        """Parse a MusicXML file into a ready editor keys arrangement.
+        """Parse MusicXML into a ready editor arrangement.
 
-        Consumed by the editor plugin's Add-Keys ▸ MusicXML path. Returns
+        Consumed by the editor plugin's MusicXML paths. Returns
         `{arrangement: {name, notes, chords, chord_templates, notation, …}}`
-        — flat editor-shape notes carrying the score's authored hand
+        — flat editor-shape notes carrying authored grand-staff hand
         assignment (`techniques.hand`, 'rh'/'lh' from grand-staff
-        provenance) plus the notation payload for the editor's
+        provenance, or authored TAB string/fret positions and tuning) plus the
+        notation payload for the editor's
         authored-notation save rail. Stateless: parses from the request
         body, keeps nothing on disk.
         """
