@@ -13,19 +13,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - **`POST /api/plugins/musicxml_import/parse-arrangement`** — parses a
   MusicXML file (`.xml` / `.musicxml` / `.mxl`) straight into a ready
-  editor keys arrangement, the endpoint the editor plugin's
+  editor arrangement, the endpoint the editor plugin's
   Add-Keys ▸ MusicXML path has been calling (and 404-ing on) since it
   shipped. Stateless — nothing is kept server-side. The response carries:
-  - flat editor-shape notes with **the score's authored hand assignment
-    per note** (`techniques.hand`, `'rh'`/`'lh'` from the grand-staff
-    split; staves beyond the grand staff — e.g. organ pedals — stay
-    unassigned). Ties fold into one held note; grace notes are skipped.
+  - flat editor-shape notes with authored semantics: grand-staff scores keep
+    **the score's hand assignment per note** (`techniques.hand`, `'rh'`/`'lh'`),
+    while guitar/TAB scores keep authored **tuning and string/fret positions**.
+    Ties fold into one held note; grace notes are skipped.
   - the full **notation payload** stashed on the arrangement, so the
     editor can preserve authored notation instead of re-deriving hand
     splits heuristically.
-  - an arrangement name guaranteed to satisfy the editor's
-    prefix-anchored keys router (a non-keys part name gets a
-    `Keys — ` prefix; placeholder part ids like `P1` are dropped).
+  - an arrangement name/type the editor routes correctly (`Lead`/`Bass` for
+    fretted parts; a keys-safe name for grand-staff imports).
+- Parallel standard-notation + TAB exports now select the TAB part instead of
+  blindly parsing the first part, preserving authored fretting and tuning.
 - `parse_musicxml` result now includes `flat_notes`
   (`{'t','sus','midi','staff'}`, tie-folded, grace-skipped, staff = hand
   provenance) and a pure `editor_arrangement(result)` builder for the

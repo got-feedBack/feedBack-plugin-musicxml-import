@@ -1,6 +1,6 @@
-"""The parse-arrangement surface: flat_notes (tie folding, grace skipping,
-staff provenance), editor_arrangement (packed pitch encoding, per-note hand,
-keys-recognizable naming, notation passthrough), and the stateless endpoint.
+"""The parse-arrangement surface: part/instrument selection, flat notes,
+authored piano hands and guitar positions, editor arrangement shaping,
+notation passthrough, and the stateless endpoint.
 
 The per-note hand vocabulary is 'rh'/'lh' (matching the notation staff ids);
 staves beyond the grand staff (e.g. an organ pedal staff) stay unassigned —
@@ -49,6 +49,99 @@ def _note(step='C', octave='4', staff='1', dur='2', ntype='quarter',
       <staff>{staff}</staff>
       {extra}
     </note>'''
+
+def _paired_guitar_score() -> bytes:
+    """Finale-style parallel standard + TAB parts with generic names."""
+    return b'''<score-partwise version="3.0">
+  <part-list>
+    <score-part id="P1">
+      <part-name print-object="no">MusicXML Part</part-name>
+      <score-instrument id="P1-I1">
+        <instrument-name>SoftSynth</instrument-name>
+        <instrument-sound>pluck.guitar</instrument-sound>
+      </score-instrument>
+      <midi-instrument id="P1-I1"><midi-program>26</midi-program></midi-instrument>
+    </score-part>
+    <score-part id="P2"><part-name print-object="no">MusicXML Part</part-name></score-part>
+  </part-list>
+  <part id="P1"><measure number="1"><attributes><divisions>2</divisions>
+    <time><beats>4</beats><beat-type>4</beat-type></time>
+    <clef><sign>G</sign><line>2</line></clef></attributes>
+    <note><pitch><step>E</step><octave>4</octave></pitch><duration>2</duration>
+      <voice>1</voice><type>quarter</type></note></measure></part>
+  <part id="P2"><measure number="1"><attributes><divisions>4</divisions>
+    <time><beats>4</beats><beat-type>4</beat-type></time>
+    <clef><sign>TAB</sign><line>5</line></clef>
+    <staff-details><staff-lines>6</staff-lines>
+      <staff-tuning line="1"><tuning-step>E</tuning-step><tuning-octave>2</tuning-octave></staff-tuning>
+      <staff-tuning line="2"><tuning-step>A</tuning-step><tuning-octave>2</tuning-octave></staff-tuning>
+      <staff-tuning line="3"><tuning-step>D</tuning-step><tuning-octave>3</tuning-octave></staff-tuning>
+      <staff-tuning line="4"><tuning-step>G</tuning-step><tuning-octave>3</tuning-octave></staff-tuning>
+      <staff-tuning line="5"><tuning-step>B</tuning-step><tuning-octave>3</tuning-octave></staff-tuning>
+      <staff-tuning line="6"><tuning-step>E</tuning-step><tuning-octave>4</tuning-octave></staff-tuning>
+    </staff-details></attributes>
+    <direction><sound tempo="120"/></direction>
+    <note><pitch><step>F</step><alter>1</alter><octave>4</octave></pitch>
+      <duration>4</duration><voice>1</voice><type>quarter</type>
+      <notations><technical><string>1</string><fret>2</fret></technical></notations>
+    </note></measure></part>
+</score-partwise>'''
+
+
+def test_parallel_tab_part_wins_and_preserves_guitar_position():
+    result = mxml2notation.parse_musicxml(_paired_guitar_score())
+    assert result['selected_part_id'] == 'P2'
+    assert result['instrument'] == 'guitar'
+    assert result['tuning'] == [0, 0, 0, 0, 0, 0]
+    assert result['flat_notes'] == [{
+        't': 0.0, 'sus': 0.5, 'midi': 66, 'staff': 'rh',
+        'string': 5, 'fret': 2,
+    }]
+    arr = mxml2notation.editor_arrangement(result)
+    assert arr['name'] == 'Lead'
+    assert arr['tuning'] == [0, 0, 0, 0, 0, 0]
+    assert arr['notes'][0]['string'] == 5
+    assert arr['notes'][0]['fret'] == 2
+    assert arr['notes'][0]['techniques'] == {}
+
+
+def test_declared_guitar_program_is_recognized_without_tab():
+    root = mxml2notation.ET.fromstring(_paired_guitar_score())
+    p1 = root.find("part[@id='P1']")
+    declared = mxml2notation._score_parts_by_id(root)['P1']
+    assert mxml2notation._part_instrument(p1, declared) == 'guitar'
+
+
+def test_extended_fretted_fallback_uses_matching_standard_tuning():
+    guitar = mxml2notation.editor_arrangement({
+        'instrument': 'guitar', 'tuning': [0] * 7,
+        'flat_notes': [{'t': 0, 'sus': 1, 'midi': 35, 'staff': 'rh'}],
+        'selected_part_name': 'Seven String Guitar',
+    })
+    assert guitar['notes'][0]['string'] == 0
+    assert guitar['notes'][0]['fret'] == 0
+
+    bass = mxml2notation.editor_arrangement({
+        'instrument': 'bass_guitar', 'tuning': [0] * 5,
+        'flat_notes': [{'t': 0, 'sus': 1, 'midi': 23, 'staff': 'rh'}],
+        'selected_part_name': 'Five String Bass',
+    })
+    assert bass['notes'][0]['string'] == 0
+    assert bass['notes'][0]['fret'] == 0
+
+
+def test_arrangement_name_comes_from_selected_part():
+    arr = mxml2notation.editor_arrangement({
+        'instrument': 'piano', 'selected_part_name': 'Piano',
+        'part_names': ['MusicXML Part', 'Piano'], 'flat_notes': [],
+    })
+    assert arr['name'] == 'Piano'
+
+    unnamed = mxml2notation.editor_arrangement({
+        'instrument': 'piano', 'selected_part_name': 'P2',
+        'part_names': ['Unrelated Part', 'P2'], 'flat_notes': [],
+    })
+    assert unnamed['name'] == 'Keys'
 
 
 # ── flat_notes semantics ────────────────────────────────────────────────────
