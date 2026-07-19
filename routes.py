@@ -6,6 +6,13 @@ Endpoints:
     for the UI to display (title, composer, measure count, duration).
     Saves the raw bytes to a temp file for the build step.
 
+  POST /api/plugins/musicxml_import/parse-arrangement
+    Receives a MusicXML file as base64 and returns a ready editor keys
+    arrangement (the editor plugin's Add-Keys ▸ MusicXML path): flat
+    notes with authored per-note hand assignments from the grand-staff
+    split, plus the full notation payload for the editor's
+    authored-notation save rail. Stateless — nothing is kept server-side.
+
   WS   /ws/plugins/musicxml_import/build
     Builds a .feedpak from the uploaded MusicXML file, streaming progress
     messages. Produces notation_<instrument>.json + song_timeline.json in
@@ -60,6 +67,29 @@ def _purge_stale_uploads() -> None:
         shutil.rmtree(path.parent, ignore_errors=True)
 
 
+def _decode_upload(data: dict) -> bytes | dict:
+    """Validate a `{filename, data}` base64 upload body shared by /upload
+    and /parse-arrangement. Returns the decoded bytes, or an `{'error': …}`
+    dict ready to send back."""
+    filename = data.get('filename', '')
+    b64 = data.get('data', '')
+    if not filename or not b64:
+        return {'error': 'No file data'}
+
+    ext = Path(filename).suffix.lower()
+    if ext not in ('.xml', '.musicxml', '.mxl'):
+        return {'error': f'Unsupported format ({ext}). Only .xml / .musicxml / .mxl files are supported.'}
+
+    # Cheap size bound on the encoded payload (base64 ≈ 4/3 overhead).
+    if len(b64) > _MAX_UPLOAD_BYTES * 4 // 3 + 4:
+        return {'error': 'File too large (max 20 MB)'}
+
+    try:
+        return base64.b64decode(b64, validate=True)
+    except Exception:
+        return {'error': 'Invalid base64 data'}
+
+
 def setup(app, context):
     global _get_dlc_dir, _extract_meta, _meta_db, _config_dir, _log, _mxml
     _get_dlc_dir = context['get_dlc_dir']
@@ -72,23 +102,10 @@ def setup(app, context):
     @app.post('/api/plugins/musicxml_import/upload')
     async def upload_mxml(data: dict):
         """Receive a MusicXML file as base64, parse metadata, return summary."""
+        xml_bytes = _decode_upload(data)
+        if isinstance(xml_bytes, dict):
+            return xml_bytes
         filename = data.get('filename', '')
-        b64 = data.get('data', '')
-        if not filename or not b64:
-            return {'error': 'No file data'}
-
-        ext = Path(filename).suffix.lower()
-        if ext not in ('.xml', '.musicxml', '.mxl'):
-            return {'error': f'Unsupported format ({ext}). Only .xml / .musicxml / .mxl files are supported.'}
-
-        # Cheap size bound on the encoded payload (base64 ≈ 4/3 overhead).
-        if len(b64) > _MAX_UPLOAD_BYTES * 4 // 3 + 4:
-            return {'error': 'File too large (max 20 MB)'}
-
-        try:
-            xml_bytes = base64.b64decode(b64)
-        except Exception:
-            return {'error': 'Invalid base64 data'}
 
         _purge_stale_uploads()
 
@@ -116,6 +133,38 @@ def setup(app, context):
             _log.exception('MusicXML parse error')
             shutil.rmtree(tmp_dir, ignore_errors=True)
             return {'error': f'Failed to parse: {e}'}
+
+    @app.post('/api/plugins/musicxml_import/parse-arrangement')
+    async def parse_arrangement(data: dict):
+        """Parse a MusicXML file into a ready editor keys arrangement.
+
+        Consumed by the editor plugin's Add-Keys ▸ MusicXML path. Returns
+        `{arrangement: {name, notes, chords, chord_templates, notation, …}}`
+        — flat editor-shape notes carrying the score's authored hand
+        assignment (`techniques.hand`, 'rh'/'lh' from grand-staff
+        provenance) plus the notation payload for the editor's
+        authored-notation save rail. Stateless: parses from the request
+        body, keeps nothing on disk.
+        """
+        xml_bytes = _decode_upload(data)
+        if isinstance(xml_bytes, dict):
+            return xml_bytes
+
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None, _mxml.parse_musicxml, xml_bytes)
+        except Exception as e:
+            _log.exception('MusicXML parse error')
+            return {'error': f'Failed to parse: {e}'}
+
+        return {
+            'arrangement': _mxml.editor_arrangement(result),
+            'title': result['title'],
+            'composer': result['composer'],
+            'duration': result['duration'],
+            'measure_count': result['measure_count'],
+        }
 
     @app.websocket('/ws/plugins/musicxml_import/build')
     async def ws_build_mxml(
