@@ -1565,12 +1565,20 @@ def parse_musicxml(xml_bytes: bytes) -> dict:
             tempos_deduped.append(ev)
 
     # ── Deduplicate beats ───────────────────────────────────────────────────
+    # On a timestamp collision a labeled downbeat (measure >= 0) wins over a
+    # -1 filler: a pickup measure emits a full declared-TS bar of beats, so
+    # its spillover -1 beats land exactly on the next measure's grid and
+    # would otherwise shadow that measure's downbeat label.
     seen_beat_times: set[float] = set()
     beats_deduped: list[dict] = []
     for b in sorted(beats_out, key=lambda x: x['time']):
         if b['time'] not in seen_beat_times:
             seen_beat_times.add(b['time'])
             beats_deduped.append(b)
+        elif b['measure'] >= 0 and beats_deduped[-1]['measure'] < 0:
+            # Equal times are adjacent after the sort, so the collided beat
+            # is always the last one appended.
+            beats_deduped[-1] = b
 
     # ── Build staves[] list (static staff definitions) ──────────────────────
     _STAFF_ORDER = ['rh', 'lh']

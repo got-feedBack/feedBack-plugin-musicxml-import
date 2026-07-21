@@ -27,6 +27,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **Pickup (anacrusis) downbeat labels** — a pickup measure emits a full
+  declared-TS bar of `song_timeline` beats, so its spillover `-1` beats
+  land exactly on the next measure's grid and shadowed that measure's
+  downbeat label in the dedup (measure numbering jumped 0 → 2, and
+  metronome consumers accented the wrong beats). Labeled downbeats now win
+  timestamp collisions.
 - **Timing under a mid-score `<divisions>` change** (issue #5) — `abs_div`
   accumulates across measures each counted in its own divisions, so the
   div→seconds conversion was wrong for every beat/note/section/tempo after a
