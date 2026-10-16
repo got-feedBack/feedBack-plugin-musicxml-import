@@ -1,18 +1,29 @@
 # feedBack-plugin-musicxml-import
 
-FeedBack plugin. Imports MusicXML (`.xml` / `.musicxml` / compressed
+feedBack plugin. Imports MusicXML (`.xml` / `.musicxml` / compressed
 `.mxl`) scores and produces a `.feedpak` using the **notation format** —
 ready for playback and staff rendering via the `staffview` plugin.
 
 ## Compatibility
 
-**Requires:** a FeedBack build with notation-format support in core
+**Requires:** a feedBack build with notation-format support in core
 (current `main`; v0.3.0-alpha or later).
 
 Packs are written per the [feedpak spec](https://github.com/got-feedback/feedpak-spec)
 (`spec/feedpak-v1.md`): `notation_<instrument>.json` (§7.6) +
 `song_timeline.json` (§7.4), with `feedpak_version` stamped from the host's
 own format constant.
+
+## Usage
+
+Import MusicXML is bundled with the feedBack Desktop app.
+
+1. Open **Plugins** in the sidebar and click **Import MusicXML**.
+2. Drag a `.xml`, `.musicxml` or `.mxl` file onto the drop zone, or click it to browse.
+3. Check the **Title** and **Composer** fields. They are prefilled from the score.
+4. Leave **Include synthesized piano audio** ticked to render a piano stem with FluidSynth, or untick it to add your own stems later in the editor.
+5. Click **Build Feedpak**. The pack is written to the `musicxml/` folder of your song library as `<title>_<composer>_mxml.feedpak` (spaces become underscores), and it is added to the library index right away.
+6. Click **Import Another** to convert the next score.
 
 ## What gets imported
 
@@ -85,4 +96,4 @@ AGPL-3.0-only — see `LICENSE`.
 
 Copyright (c) 2025-2026 Gionni (gionnibgud@gmail.com) and contributors.
 Originally prototyped by [Gionni](https://github.com/gionnibgud); curated
-into the FeedBack org for the piano/keys epic.
+into the feedBack org for the piano/keys epic.
